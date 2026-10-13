@@ -32,21 +32,42 @@ _LATENT_CREATORS = {
     "flux": ("mflux.models.flux.latent_creator.flux_latent_creator", "FluxLatentCreator"),
 }
 
+# model class name -> LatentCreator, checked before the family table. Qwen-Image-2.1 shares the
+# "qwen"/"qwen-edit" family labels with 1.x but packs 64-channel latents, and its txt2img and edit
+# variants each unpack with their own creator.
+_CLASS_LATENT_CREATORS = {
+    "QwenImage21": ("mflux.models.qwen21.latent_creator.qwen21_latent_creator", "Qwen21LatentCreator"),
+    "QwenImage21Edit": ("mflux.models.qwen21.latent_creator.qwen_image21_latent_creator", "QwenImage21LatentCreator"),
+}
 
-def resolve_latent_creator(family):
+
+# Classes whose denoise loop is a plain Euler step, x_{t+1} = x_t + (s_{t+1} - s_t) * v, but that do
+# not hand `denoised` to callbacks. Their raw mid-run latents decode to mostly noise (on a 6-step turbo
+# schedule, every preview but the last), so ComfyLivePreview shows the model's x0 estimate instead.
+_X0_ESTIMATE_CLASSES = {"QwenImage21", "QwenImage21Edit"}
+
+
+def _import_creator(module, cls):
+    try:
+        return getattr(importlib.import_module(module), cls)
+    except Exception:
+        return None
+
+
+def resolve_latent_creator(family, instance=None):
     """Return the LatentCreator class for a family, or None if it cannot be imported.
 
     None is a valid answer: the sampler degrades to a progress bar with no image preview rather
     than failing. Prefix match so every flux variant (canny/depth/fill/redux/kontext) and Krea 2's
-    depth control map to their base family's creator.
+    depth control map to their base family's creator. When the loaded model instance is given, a
+    class-specific creator (see _CLASS_LATENT_CREATORS) takes precedence over the family's.
     """
+    if instance is not None and type(instance).__name__ in _CLASS_LATENT_CREATORS:
+        return _import_creator(*_CLASS_LATENT_CREATORS[type(instance).__name__])
     fam = (family or "").lower()
     for prefix, (module, cls) in sorted(_LATENT_CREATORS.items(), key=lambda kv: -len(kv[0])):
         if fam.startswith(prefix):
-            try:
-                return getattr(importlib.import_module(module), cls)
-            except Exception:
-                return None
+            return _import_creator(module, cls)
     return None
 
 
@@ -61,6 +82,8 @@ class ComfyLivePreview:
         self.max_size = int(max_size)
         self.pbar = None
         self.total = None
+        self.estimate_x0 = type(model).__name__ in _X0_ESTIMATE_CLASSES
+        self._prev_latents = None
 
     # **kwargs: mflux adds arguments to its callback protocol over time (0.22 passes control_images),
     # and a preview must never be the reason a generation fails.
@@ -68,6 +91,7 @@ class ComfyLivePreview:
         import comfy.utils
         self.total = int(config.num_inference_steps)
         self.pbar = comfy.utils.ProgressBar(self.total, node_id=self.node_id)
+        self._prev_latents = latents
 
     def call_in_loop(self, t, seed, prompt, latents, config, time_steps=None, **kwargs):
         if self.pbar is None:
@@ -77,9 +101,30 @@ class ComfyLivePreview:
         step = int(t) + 1
         preview = None
         if self.latent_creator is not None and (step % self.stride == 0 or step >= self.total):
-            preview = self._decode(latents, config)
+            target = self._x0_estimate(t, latents, config) if self.estimate_x0 else latents
+            preview = self._decode(target, config)
+        self._prev_latents = latents
         # even with no image, this advances the bar and lets Cancel interrupt the loop
         self.pbar.update_absolute(step, self.total, preview)
+
+    def _x0_estimate(self, t, latents, config):
+        """The model's clean-image estimate after Euler step t, from the states on either side of it.
+
+        x_{t+1} = x_t + (s_{t+1} - s_t) * v gives v, and x0 = x_{t+1} - s_{t+1} * v. Falls back to the
+        raw latents whenever the inputs are missing, so a preview can only get better, never fail.
+        """
+        prev = self._prev_latents
+        try:
+            sigmas = config.scheduler.sigmas
+            s_t, s_next = float(sigmas[int(t)]), float(sigmas[int(t) + 1])
+        except Exception:
+            return latents
+        if prev is None or s_next == s_t:
+            return latents
+        import mlx.core as mx
+        cur = latents.astype(mx.float32)
+        velocity = (cur - prev.astype(mx.float32)) / (s_next - s_t)
+        return (cur - s_next * velocity).astype(latents.dtype)
 
     def _decode(self, latents, config):
         try:

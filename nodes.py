@@ -741,7 +741,7 @@ class MfluxModelSampler:
                 notes.append("[mflux] pid_decode: the live preview decodes through the VAE at base resolution; the final image is PiD's 4x re-render and will differ.")
             if live_preview:
                 from .preview import ComfyLivePreview, _RegistryGuard, resolve_latent_creator
-                lc = resolve_latent_creator(handle.family)
+                lc = resolve_latent_creator(handle.family, handle.instance)
                 cb = ComfyLivePreview(handle.instance, lc, node_id=unique_id, stride=int(preview_stride))
                 with _RegistryGuard(handle.instance, cb):
                     gen = handle.instance.generate_image(**forwarded)

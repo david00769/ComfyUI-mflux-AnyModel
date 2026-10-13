@@ -163,5 +163,79 @@ try:
 except ImportError:
     print("callback signature check skipped: mflux without GenerationContext")
 
+print("callback contract with mflux's GenerationContext")
+# call_before_loop/call_in_loop import comfy.utils for the progress bar; stub it so this runs without ComfyUI.
+import types  # noqa: E402
+
+_pbar_updates = []
+comfy_stub = types.ModuleType("comfy")
+comfy_stub.utils = types.SimpleNamespace(ProgressBar=lambda total, node_id=None: types.SimpleNamespace(
+    update_absolute=lambda step, total, preview: _pbar_updates.append((step, preview))))
+sys.modules.setdefault("comfy", comfy_stub)
+sys.modules.setdefault("comfy.utils", comfy_stub.utils)
+
+import mlx.core as mx  # noqa: E402
+
+cfg = types.SimpleNamespace(num_inference_steps=3, height=32, width=32,
+                            scheduler=types.SimpleNamespace(sigmas=mx.array([1.0, 0.75, 0.5, 0.0])))
+cb = P.ComfyLivePreview(FakeInstance(), None)
+cb.call_before_loop(seed=1, prompt="p", latents=mx.ones((1, 4, 8)), config=cfg,
+                    canny_image=None, depth_image=None, control_images=None)
+check("call_before_loop accepts control_images (passed by mflux >= 0.22)", cb.total == 3)
+cb.call_in_loop(t=0, seed=1, prompt="p", latents=mx.zeros((1, 4, 8)), config=cfg, time_steps=None)
+check("every step advances the progress bar", _pbar_updates[-1][0] == 1)
+
+
+print("class-specific latent creators (Qwen-Image-2.1 shares the 'qwen' family labels with 1.x)")
+
+
+def named(cls_name):
+    """An instance whose class carries the given name, as resolve_latent_creator keys on it."""
+    return type(cls_name, (), {})()
+
+
+try:
+    import mflux.models.qwen21  # noqa: F401
+    HAS_QWEN21 = True
+except ImportError:
+    HAS_QWEN21 = False
+if HAS_QWEN21:
+    check("QwenImage21 uses Qwen21LatentCreator, not the 1.x creator",
+          P.resolve_latent_creator("qwen", named("QwenImage21")).__name__ == "Qwen21LatentCreator")
+    check("QwenImage21Edit uses QwenImage21LatentCreator",
+          P.resolve_latent_creator("qwen-edit", named("QwenImage21Edit")).__name__ == "QwenImage21LatentCreator")
+else:
+    check("2.1 classes degrade to no preview on a runtime without them",
+          P.resolve_latent_creator("qwen", named("QwenImage21")) is None)
+check("a 1.x instance still gets the family's creator",
+      P.resolve_latent_creator("qwen", named("QwenImage")).__name__ == "QwenLatentCreator")
+
+print("x0 estimate for the live preview (Qwen-Image-2.1)")
+cb = P.ComfyLivePreview(named("QwenImage21"), None)
+check("QwenImage21 previews the x0 estimate", cb.estimate_x0)
+check("other models preview raw latents", not P.ComfyLivePreview(named("Flux1"), None).estimate_x0)
+x_start = mx.ones((1, 4, 8))
+cb.call_before_loop(seed=1, prompt="p", latents=x_start, config=cfg,
+                    canny_image=None, depth_image=None, control_images=None)
+check("the starting latents are remembered", cb._prev_latents is x_start)
+x_next = mx.zeros((1, 4, 8))
+cb.call_in_loop(t=0, seed=1, prompt="p", latents=x_next, config=cfg, time_steps=None)
+check("every step remembers its latents, previewed or not", cb._prev_latents is x_next)
+# Flow matching: x_s = (1 - s) * x0 + s * noise, and one Euler step x_{t+1} = x_t + (s_{t+1} - s_t) * v
+# with v = noise - x0. From the states on either side of the step, the estimate must recover x0 exactly.
+x0 = mx.random.normal((1, 16, 64), key=mx.random.key(0))
+noise = mx.random.normal((1, 16, 64), key=mx.random.key(1))
+sig = cfg.scheduler.sigmas
+x_t = (1 - sig[1]) * x0 + sig[1] * noise
+x_t1 = x_t + (sig[2] - sig[1]) * (noise - x0)
+cb._prev_latents = x_t
+est = cb._x0_estimate(1, x_t1, cfg)
+check("x0 estimate recovers the clean latents from one Euler step", mx.allclose(est, x0, atol=1e-4).item())
+check("x0 estimate keeps the latents' dtype", est.dtype == x_t1.dtype)
+cb._prev_latents = None
+check("no previous state -> raw latents", cb._x0_estimate(1, x_t1, cfg) is x_t1)
+check("no scheduler sigmas -> raw latents",
+      cb._x0_estimate(1, x_t1, types.SimpleNamespace(num_inference_steps=3)) is x_t1)
+
 
 print("\nPREVIEW OK — resolver + registry hygiene + decode safety verified")
