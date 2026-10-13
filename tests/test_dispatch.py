@@ -131,6 +131,22 @@ _, _, _, path_rdx2 = D.resolve_config_and_path("dev-redux", model_path="/my/loca
 ok(path_rdx2 == "/my/local/flux", "explicit model_path overrides the default redux base")
 print("3c. dev-redux base defaults to FLUX.1-dev (adapter-only repo) OK")
 
+# ---- 3e. the loader exposes bake_lora and forwards it (default on, the previous fixed behavior) ----
+opt_loader = nodes.MfluxModelLoader.INPUT_TYPES()["optional"]
+ok(opt_loader.get("bake_lora", (None, {}))[1].get("default") is True, "loader must expose bake_lora, default True")
+_built = []
+_real_build_model = D.build_model
+D.build_model = lambda cls, **kw: _built.append(kw) or object()
+try:
+    for bake in (True, False):
+        handle, = nodes.MfluxModelLoader().load("schnell", "none", keep_loaded=False,
+                                                free_comfy_first=False, bake_lora=bake)
+        ok(_built[-1]["bake_lora"] is bake, f"bake_lora={bake} must reach build_model")
+    ok(handle.cache_key[-1] is False, "bake_lora must be part of the cache key")
+finally:
+    D.build_model = _real_build_model
+print("3e. loader forwards bake_lora (default True) and keys the cache on it OK")
+
 # ---- 4. capability profiles (introspection + small tables) ----
 def prof(alias_or_cls, family=None):
     if isinstance(alias_or_cls, str):

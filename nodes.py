@@ -538,6 +538,7 @@ class MfluxModelLoader:
                 "controlnet_strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05, "tooltip": "Krea-2-depth only: scales the control deltas merged into the base weights at load time. (flux-controlnet takes a strength per controlnet from the MfluxImage chain instead.)"}),
                 "keep_loaded": ("BOOLEAN", {"default": True}),
                 "free_comfy_first": ("BOOLEAN", {"default": True}),
+                "bake_lora": ("BOOLEAN", {"default": True, "tooltip": "Merge LoRA deltas into the base weights (faster). Turn off to apply the full update: in bf16, baking keeps only the part of each delta larger than the weights' rounding step (mflux warns how much)."}),
             },
         }
 
@@ -548,7 +549,7 @@ class MfluxModelLoader:
 
     def load(self, model, quantize, base_model="(none)", model_path="",
              lora=None, controlnet_path="", controlnet_strength=1.0,
-             keep_loaded=True, free_comfy_first=True):
+             keep_loaded=True, free_comfy_first=True, bake_lora=True):
         model = strip_mark(model)          # drop the dropdown "needs download" mark
         base = "" if base_model in ("(none)", "") else base_model
         q = None if quantize == "none" else int(quantize)
@@ -576,7 +577,7 @@ class MfluxModelLoader:
                 raise ValueError(f"controlnet_path does not exist and is not an HF repo id: {p}")
 
         cache_key = (family, path or model, q, tuple(lp or ()), tuple(ls or ()), base,
-                     tuple(cn_paths), float(controlnet_strength))
+                     tuple(cn_paths), float(controlnet_strength), bool(bake_lora))
 
         lora_note = ""
         if keep_loaded and _CACHE["key"] == cache_key:
@@ -587,7 +588,7 @@ class MfluxModelLoader:
             try:
                 instance = D.build_model(
                     cls, quantize=q, model_config=cfg, model_path=path,
-                    lora_paths=lp, lora_scales=ls, bake_lora=True,
+                    lora_paths=lp, lora_scales=ls, bake_lora=bool(bake_lora),
                     controlnet_paths=cn_paths, controlnet_path=cn_paths[0] if cn_paths else None,
                     controlnet_strength=float(controlnet_strength),
                 )
