@@ -38,13 +38,14 @@ _LATENT_CREATORS = {
 _CLASS_LATENT_CREATORS = {
     "QwenImage21": ("mflux.models.qwen21.latent_creator.qwen21_latent_creator", "Qwen21LatentCreator"),
     "QwenImage21Edit": ("mflux.models.qwen21.latent_creator.qwen_image21_latent_creator", "QwenImage21LatentCreator"),
+    "QwenImage21Controlnet": ("mflux.models.qwen21.latent_creator.qwen_image21_latent_creator", "QwenImage21LatentCreator"),
 }
 
 
 # Classes whose denoise loop is a plain Euler step, x_{t+1} = x_t + (s_{t+1} - s_t) * v, but that do
 # not hand `denoised` to callbacks. Their raw mid-run latents decode to mostly noise (on a 6-step turbo
 # schedule, every preview but the last), so ComfyLivePreview shows the model's x0 estimate instead.
-_X0_ESTIMATE_CLASSES = {"QwenImage21", "QwenImage21Edit"}
+_X0_ESTIMATE_CLASSES = {"QwenImage21", "QwenImage21Edit", "QwenImage21Controlnet"}
 
 
 def _import_creator(module, cls):

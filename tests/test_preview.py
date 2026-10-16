@@ -204,6 +204,9 @@ if HAS_QWEN21:
           P.resolve_latent_creator("qwen", named("QwenImage21")).__name__ == "Qwen21LatentCreator")
     check("QwenImage21Edit uses QwenImage21LatentCreator",
           P.resolve_latent_creator("qwen-edit", named("QwenImage21Edit")).__name__ == "QwenImage21LatentCreator")
+    check("QwenImage21Controlnet uses QwenImage21LatentCreator and previews x0",
+          P.resolve_latent_creator("qwen21-controlnet", named("QwenImage21Controlnet")).__name__ == "QwenImage21LatentCreator"
+          and P.ComfyLivePreview(named("QwenImage21Controlnet"), None).estimate_x0)
 else:
     check("2.1 classes degrade to no preview on a runtime without them",
           P.resolve_latent_creator("qwen", named("QwenImage21")) is None)

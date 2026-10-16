@@ -3,6 +3,14 @@
 All notable changes to this project are documented here. The format is loosely
 based on Keep a Changelog.
 
+## Unreleased
+
+- The loader takes `bake_lora` (default on, as before). Off, mflux applies the full LoRA update
+  instead of merging it into the weights, where bf16 rounding drops part of a small delta.
+  From @TracyMcgrady256 in #8.
+- Qwen-Image-2.1's live preview (txt2img, edit and ControlNet) decodes the model's x0 estimate,
+  so the frames converge on the image instead of showing noise mid-run. From @TracyMcgrady256 in #8.
+
 ## 0.10.0
 
 Tested on upstream mflux 0.22.0 with ComfyUI 0.40.0 and torch 2.14.1.
