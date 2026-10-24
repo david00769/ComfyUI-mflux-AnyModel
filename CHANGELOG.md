@@ -11,6 +11,14 @@ based on Keep a Changelog.
   one reference image. `keep_loaded` off also drops the module and clears the MLX cache
   after the image is decoded. `MFLUX_BEFORE_LOAD` and `MFLUX_AFTER_FREE`, when set, are
   shell commands run around the load and the release.
+- The loader takes `local_model`, a dropdown of model folders in ComfyUI's new `mflux` model
+  paths (`models/mflux`, or an `mflux:` entry in `extra_model_paths.yaml`). It overrides
+  `model_path`, so a local pack no longer has to be typed in. It is the last widget, so saved
+  workflows keep their values.
+- The `⬇` mark looks in the HuggingFace cache mflux actually uses (`HF_HUB_CACHE`, `HF_HOME`),
+  not only `~/.cache/huggingface/hub`, so models in a relocated cache stop showing as missing.
+- A saved workflow validates whether or not its model name carries the `⬇` mark. Before, a
+  model downloaded after saving (or a moved cache) changed the label and failed validation.
 - The loader takes `bake_lora` (default on, as before). Off, mflux applies the full LoRA update
   instead of merging it into the weights, where bf16 rounding drops part of a small delta.
   From @TracyMcgrady256 in #8.
