@@ -86,13 +86,30 @@ NEEDS_DL = " ⬇"           # marks a dropdown model not present in the local HF
 NO_LOCAL = "(none)"
 LOCAL_FOLDER = "mflux"      # ComfyUI model folder type for local mflux model folders
 
+# The optional mlx-serve engine (mlxserve_client.py): packs only mlx-serve can run live in their own
+# folder type, so the mflux engine never offers them unlabelled.
+ENGINES = ["mflux", "mlx-serve"]
+MLX_SERVE_FOLDER = "mlx_serve"
+MLX_SERVE_TAG = "[mlx-serve] "
+PACK_DECIDES = "mlx-serve (pack decides)"   # the `model` entry for packs mflux has no alias for
+
 if folder_paths is not None:
     # models/mflux by default. An "mflux:" entry in extra_model_paths.yaml is loaded before
-    # custom nodes import, and this appends to it rather than replacing it.
+    # custom nodes import, and this appends to it rather than replacing it. Same for mlx_serve.
+    for _folder in (LOCAL_FOLDER, MLX_SERVE_FOLDER):
+        try:
+            folder_paths.add_model_folder_path(_folder, os.path.join(folder_paths.models_dir, _folder))
+        except Exception:
+            pass
+
+
+def _mlxserve_client():
+    """Import mlxserve_client both as a package (ComfyUI) and as a loose module (the self-tests)."""
     try:
-        folder_paths.add_model_folder_path(LOCAL_FOLDER, os.path.join(folder_paths.models_dir, LOCAL_FOLDER))
-    except Exception:
-        pass
+        from . import mlxserve_client
+    except ImportError:
+        import mlxserve_client
+    return mlxserve_client
 
 
 def _hf_hub_cache():
@@ -110,11 +127,11 @@ def _hf_hub_cache():
     return os.path.join(xdg, "huggingface", "hub")
 
 
-def _local_roots():
+def _local_roots(folder=LOCAL_FOLDER):
     if folder_paths is None:
         return []
     try:
-        return folder_paths.get_folder_paths(LOCAL_FOLDER)
+        return folder_paths.get_folder_paths(folder)
     except Exception:
         return []
 
@@ -124,12 +141,12 @@ def _has_weights(folder):
                 or glob.glob(os.path.join(folder, "**", "*.gguf"), recursive=True))
 
 
-def local_models(roots=None):
-    """{name: path} for each model folder in ComfyUI's 'mflux' model paths: an immediate
-    subfolder (or a symlink to one) that holds .safetensors or .gguf weights. A name found
-    under two roots resolves to the first, matching ComfyUI's folder order."""
+def local_models(roots=None, folder=LOCAL_FOLDER):
+    """{name: path} for each model folder in ComfyUI's 'mflux' (or ``folder``) model paths: an
+    immediate subfolder (or a symlink to one) that holds .safetensors or .gguf weights. A name
+    found under two roots resolves to the first, matching ComfyUI's folder order."""
     found = {}
-    for root in _local_roots() if roots is None else roots:
+    for root in _local_roots(folder) if roots is None else roots:
         try:
             names = sorted(os.listdir(root))
         except OSError:
@@ -139,6 +156,14 @@ def local_models(roots=None):
             if name not in found and not name.startswith(".") and os.path.isdir(path) and _has_weights(path):
                 found[name] = path
     return found
+
+
+def local_model_choices():
+    """{dropdown label: path}: the mflux folders, then the mlx-serve-only folders labelled MLX_SERVE_TAG."""
+    choices = dict(local_models())
+    for name, path in local_models(folder=MLX_SERVE_FOLDER).items():
+        choices[MLX_SERVE_TAG + name] = path
+    return choices
 
 
 def _repo_cached(repo):
@@ -213,6 +238,8 @@ class MfluxModelHandle:
     lora_note: str = ""
     keep_loaded: bool = True
     low_ram: bool = True
+    engine: str = "mflux"         # "mlx-serve": instance and profile are None; remote_model names the pack
+    remote_model: str = ""
 
     def __repr__(self) -> str:
         # Deliberately shallow. When a node raises, ComfyUI formats every input with str() to build
@@ -596,7 +623,7 @@ class MfluxModelLoader:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "model": (model_choices(), {"default": "schnell"}),
+                "model": (model_choices() + [PACK_DECIDES], {"default": "schnell"}),
                 "quantize": (QUANTIZE_CHOICES, {"default": "none"}),
             },
             "optional": {
@@ -611,7 +638,9 @@ class MfluxModelLoader:
                 # Appended last so already-saved graphs keep their widgets_values positions.
                 "low_ram": ("BOOLEAN", {"default": True, "tooltip": "Cap the MLX cache at 1 GB for this run (mflux --low-ram). With keep_loaded off, the text encoder is dropped after encoding and the transformer before the VAE decode. Leave this on for a 4-bit pack; off keeps the old unbounded cache."}),
                 # Last, so workflows saved before it existed keep their widget values in place.
-                "local_model": ([NO_LOCAL] + list(local_models()), {"default": NO_LOCAL, "tooltip": "A model folder from ComfyUI's 'mflux' model paths: models/mflux, plus any 'mflux:' entry in extra_model_paths.yaml. Overrides model_path. 'model' still picks the architecture, so set it to the model the folder holds."}),
+                "local_model": ([NO_LOCAL] + list(local_model_choices()), {"default": NO_LOCAL, "tooltip": "A model folder from ComfyUI's 'mflux' model paths: models/mflux, plus any 'mflux:' entry in extra_model_paths.yaml. Overrides model_path. 'model' still picks the architecture, so set it to the model the folder holds. Folders marked [mlx-serve] come from the 'mlx_serve' paths and run only with engine: mlx-serve."}),
+                # Last, so workflows saved before it existed keep their widget values in place.
+                "engine": (ENGINES, {"default": "mflux", "tooltip": "mflux runs the model inside ComfyUI. mlx-serve sends the job to a running mlx-serve server (MLX_SERVE_URL, default http://127.0.0.1:11234): usually faster on Apple Silicon, uses more memory, and needs a local pack folder (local_model or model_path). With mlx-serve the pack decides the model; LoRA, ControlNet and quantize are not available."}),
             },
         }
 
@@ -624,13 +653,19 @@ class MfluxModelLoader:
     def VALIDATE_INPUTS(cls, model):
         # Accept an alias with or without the download mark: the mark tracks the cache, so a
         # saved workflow's label would otherwise stop validating once a model is downloaded.
-        if strip_mark(model) in sampler_aliases():
+        if model == PACK_DECIDES or strip_mark(model) in sampler_aliases():
             return True
         return f"Unknown model '{model}'. Pick one from the dropdown; a repo or local path goes in model_path or local_model."
 
     def load(self, model, quantize, base_model="(none)", model_path="",
              lora=None, controlnet_path="", controlnet_strength=1.0,
-             keep_loaded=True, free_comfy_first=True, bake_lora=True, low_ram=True, local_model=NO_LOCAL):
+             keep_loaded=True, free_comfy_first=True, bake_lora=True, low_ram=True, local_model=NO_LOCAL,
+             engine="mflux"):
+        if engine == "mlx-serve":
+            return (_mlxserve_handle(model, quantize, model_path, lora, controlnet_path, keep_loaded, local_model),)
+        if model == PACK_DECIDES or (local_model or "").startswith(MLX_SERVE_TAG):
+            raise ValueError(f"'{model if model == PACK_DECIDES else local_model}' runs only with engine: mlx-serve. "
+                             "Set the loader's engine to mlx-serve, or pick an mflux model and folder.")
         model = strip_mark(model)          # drop the dropdown "needs download" mark
         if local_model and local_model != NO_LOCAL:
             folder = local_models().get(local_model)
@@ -685,6 +720,37 @@ class MfluxModelLoader:
             lora_note=lora_note, keep_loaded=bool(keep_loaded), low_ram=bool(low_ram),
         )
         return (handle,)
+
+
+def _mlxserve_handle(model, quantize, model_path, lora, controlnet_path, keep_loaded, local_model):
+    """The loader's mlx-serve path: no mflux class, profile or load here. The server loads the pack
+    when the sampler runs, so the memory hooks run there too (ComfyUI caches the loader's output)."""
+    if lora:
+        raise ValueError("engine: mlx-serve does not take a LoRA from the loader. Use engine: mflux for LoRAs.")
+    if (controlnet_path or "").strip():
+        raise ValueError("engine: mlx-serve has no ControlNet. Use engine: mflux for controlnet_path.")
+    if quantize != "none":
+        raise ValueError("engine: mlx-serve runs the pack as stored; set quantize to none "
+                         "(mlx-serve picks int8 or 4-bit compute itself).")
+    if local_model and local_model != NO_LOCAL:
+        path = local_model_choices().get(local_model)
+        if path is None:
+            raise ValueError(f"local_model '{local_model}' is no longer in the mflux or mlx_serve model folders.")
+    else:
+        path = os.path.expanduser((model_path or "").strip())
+    if not path or not os.path.isdir(path):
+        raise ValueError("engine: mlx-serve needs a local pack folder: pick local_model, or set model_path "
+                         f"to a folder on this Mac (got {model_path!r}).")
+    path = os.path.realpath(path)   # one id for load, request and unload
+    if _CACHE.get("model") is not None:
+        # Switching engines: do not keep an mflux model resident beside the server's copy.
+        from types import SimpleNamespace
+        _memory_policy().release_model(SimpleNamespace(instance=_CACHE["model"]), _CACHE)
+    return MfluxModelHandle(
+        instance=None, family="mlx-serve", model_config=None, alias=strip_mark(model), profile=None,
+        cache_key=("mlx-serve", path), free_comfy_first=False, keep_loaded=bool(keep_loaded),
+        low_ram=False, engine="mlx-serve", remote_model=path,
+    )
 
 
 def _load_instance(cls, cfg, path, q, lp, ls, cn_paths, controlnet_strength, bake_lora,
@@ -790,13 +856,27 @@ class MfluxModelSampler:
                  mcf_max_change=0.0, unique_id=None):
         handle = model
         prompt = _clean_caption_prompt(prompt)
-        if handle.free_comfy_first:
-            _free_comfy()
 
         # resolve the image payload (typed MfluxImage wins over the simple image)
         payload = mflux_image
         if payload is None and image is not None:
             payload = MfluxImagePayload(images=[image], strength=image_strength)
+
+        if getattr(handle, "engine", "mflux") == "mlx-serve":
+            ignored = [name for name, value, inert in (
+                ("scheduler", scheduler, "auto"), ("preset", preset, "(model default)"),
+                ("pid_decode", bool(pid_decode), False), ("shift", float(shift), 0.0),
+                ("sigma_schedule", (sigma_schedule or "").strip(), ""), ("mcf_max_change", float(mcf_max_change), 0.0),
+                ("map_image", payload.aux if payload is not None else None, None),
+            ) if value != inert]
+            gen, forwarded, notes = _generate_mlxserve(handle, prompt, negative_prompt, seed, steps, guidance,
+                                                       width, height, payload, unique_id)
+            if ignored:
+                notes.append(f"[mflux] engine mlx-serve ignored: {', '.join(ignored)} (mflux-only settings).")
+            return _finish(handle, gen, payload, forwarded, notes, mask_mode, mask_feather)
+
+        if handle.free_comfy_first:
+            _free_comfy()
 
         temps = []
 
@@ -885,38 +965,106 @@ class MfluxModelSampler:
                 policy.release_model(handle, _CACHE)
                 policy.run_hook("MFLUX_AFTER_FREE", required=False)
 
-        if getattr(handle, "lora_note", ""):
-            notes = [handle.lora_note] + notes
-        info = f"model={handle.alias} family={handle.family} forwarded={sorted(forwarded)}"
+        return _finish(handle, gen, payload, forwarded, notes, mask_mode, mask_feather)
 
-        # Families return a GeneratedImage (metadata + .image), except where they do not: the
-        # Z-Image ControlNet is annotated `-> Image.Image` and in fact returns a GeneratedImage.
-        # Read whichever actually came back rather than trusting the annotation either way.
-        gen_pil = getattr(gen, "image", gen)
 
-        # Mask-preserve composite: for edit/img2img models that do NOT consume a mask natively,
-        # a connected mask lets painted regions stay locked to the original (hard-lock openings)
-        # or restrict the edit to the painted region. flux-fill consumes its mask natively -> skip.
-        out_image = _pil_to_image(gen_pil)
-        native_mask = bool(set(handle.profile.image_role_args) & MASK_ARGS)
-        if (payload is not None and payload.mask is not None and not native_mask
-                and mask_mode != "off" and payload.images):
-            try:
-                out_image = _preserve_composite(
-                    original_tensor=payload.images[0], edited_pil=gen_pil,
-                    mask_tensor=payload.mask, keep_white=(mask_mode == "preserve"),
-                    feather=int(mask_feather),
-                )
-                notes.append(f"[mflux] mask composite: mode={mask_mode}, feather={mask_feather}px "
-                             f"(painted={'kept from original' if mask_mode == 'preserve' else 'took the edit'}).")
-            except Exception as e:
-                notes.append(f"[mflux] mask composite skipped ({type(e).__name__}: {e}).")
+def _finish(handle, gen, payload, forwarded, notes, mask_mode, mask_feather):
+    """The sampler's shared tail for both engines: PIL to IMAGE, the mask composite, and the info string."""
+    if getattr(handle, "lora_note", ""):
+        notes = [handle.lora_note] + notes
+    info = f"model={handle.alias} family={handle.family} forwarded={sorted(forwarded)}"
 
-        if notes:
-            info += "\n" + "\n".join(notes)
-            for n in notes:
-                print(n)
-        return (out_image, info)
+    # Families return a GeneratedImage (metadata + .image), except where they do not: the
+    # Z-Image ControlNet is annotated `-> Image.Image` and in fact returns a GeneratedImage.
+    # Read whichever actually came back rather than trusting the annotation either way.
+    gen_pil = getattr(gen, "image", gen)
+
+    # Mask-preserve composite: for edit/img2img models that do NOT consume a mask natively,
+    # a connected mask lets painted regions stay locked to the original (hard-lock openings)
+    # or restrict the edit to the painted region. flux-fill consumes its mask natively -> skip.
+    # engine mlx-serve has no profile and never sends a mask, so the composite always applies.
+    out_image = _pil_to_image(gen_pil)
+    native_mask = handle.profile is not None and bool(set(handle.profile.image_role_args) & MASK_ARGS)
+    if (payload is not None and payload.mask is not None and not native_mask
+            and mask_mode != "off" and payload.images):
+        try:
+            out_image = _preserve_composite(
+                original_tensor=payload.images[0], edited_pil=gen_pil,
+                mask_tensor=payload.mask, keep_white=(mask_mode == "preserve"),
+                feather=int(mask_feather),
+            )
+            notes.append(f"[mflux] mask composite: mode={mask_mode}, feather={mask_feather}px "
+                         f"(painted={'kept from original' if mask_mode == 'preserve' else 'took the edit'}).")
+        except Exception as e:
+            notes.append(f"[mflux] mask composite skipped ({type(e).__name__}: {e}).")
+
+    if notes:
+        info += "\n" + "\n".join(notes)
+        for n in notes:
+            print(n)
+    return (out_image, info)
+
+
+def _png_bytes(tensor):
+    """One IMAGE tensor (batch of 1) as PNG bytes, for the mlx-serve request."""
+    import io
+    from PIL import Image
+    arr = (tensor[0].cpu().numpy().clip(0.0, 1.0) * 255.0).round().astype(np.uint8)
+    buf = io.BytesIO()
+    Image.fromarray(arr).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _interrupted():
+    try:
+        return bool(mm is not None and mm.processing_interrupted())
+    except Exception:
+        return False
+
+
+def _generate_mlxserve(handle, prompt, negative_prompt, seed, steps, guidance, width, height, payload, unique_id):
+    """Run one job on mlx-serve: before-hook, load, generate (streamed), then unload (unless keep_loaded)
+    and the after-hook, even on failure or cancel. Returns (PIL image, request keys, notes)."""
+    from PIL import Image
+    import io
+    client = _mlxserve_client()
+    policy = _memory_policy()
+    url = client.server_url()
+    images = [_png_bytes(t) for t in payload.images] if payload is not None else []
+    body = client.build_request(handle.remote_model, prompt, negative_prompt=negative_prompt, seed=seed,
+                                steps=steps, guidance=guidance, width=width, height=height, images=images)
+    notes = [f"[mflux] engine mlx-serve at {url}: {'edit, ' + str(len(images)) + ' image(s)' if images else 'text-to-image'}."]
+    if payload is not None and payload.mask is not None:
+        notes.append("[mflux] engine mlx-serve: the mask is applied as a composite after generation, not sent "
+                     "to the model (Qwen-Image's native masked edit needs engine: mflux).")
+    bar = None
+    try:
+        import comfy.utils
+        bar = comfy.utils.ProgressBar(max(int(steps or 0), 1))
+    except Exception:
+        pass
+
+    def progress(step, total):
+        if bar is not None and total:
+            bar.update_absolute(step, total)
+
+    policy.run_hook("MFLUX_BEFORE_LOAD", required=True)
+    try:
+        client.load(url, handle.remote_model)
+        png = client.generate(url, body, on_progress=progress, interrupted=_interrupted)
+    except InterruptedError:
+        if mm is not None:
+            mm.throw_exception_if_processing_interrupted()
+        raise
+    finally:
+        try:
+            if not handle.keep_loaded:
+                client.unload(url, handle.remote_model)
+        except Exception as e:  # the job's outcome stands; a failed unload is reported, not raised
+            notes.append(f"[mflux] mlx-serve unload failed: {e}")
+        policy.run_hook("MFLUX_AFTER_FREE", required=False)
+    forwarded = {k: v for k, v in body.items() if k not in ("image", "ref_images", "stream", "response_format")}
+    return Image.open(io.BytesIO(png)).convert("RGB"), forwarded, notes
 
 
 # --------------------------------------------------------------------------- #

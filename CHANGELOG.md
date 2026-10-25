@@ -5,6 +5,14 @@ based on Keep a Changelog.
 
 ## Unreleased
 
+- The loader takes `engine` (default `mflux`, so nothing changes until you pick it). `mlx-serve`
+  sends the job to a running [mlx-serve](https://github.com/ddalcu/mlx-serve) server, which is
+  faster on Apple Silicon for Qwen-Image 2.1, FLUX.2 Klein and MOSS-Image (measured table in the
+  README) at the cost of more memory. Packs only mlx-serve can run go in a new `mlx_serve` model
+  folder and show in `local_model` as `[mlx-serve] <name>`; `mlx-serve (pack decides)` is the
+  `model` entry for a pack mflux has no alias for. The memory hooks wrap each job, and Cancel stops
+  it. A mask is applied as the composite; LoRA, ControlNet and `quantize` stay mflux-only. The
+  client is stdlib-only (`mlxserve_client.py`), tested against a fake server in `tests/test_mlxserve.py`.
 - The loader takes `low_ram` (default on). It registers mflux's `MemorySaver` for that
   generate call: a 1 GB MLX cache cap, the text encoder dropped after encoding, and the
   transformer dropped before the VAE decode when `keep_loaded` is off and there is at most

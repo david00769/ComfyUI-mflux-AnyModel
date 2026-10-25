@@ -238,11 +238,61 @@ negative branch at guidance > 1.0 (Z-Image, Krea 2, Mage Flow) drop it with a no
 the effective guidance sits at or below that, matching what `mflux-capabilities`
 (mflux >= 0.18.34) reports for the CLIs.
 
+## Optional engine: mlx-serve
+
+The loader's last widget, `engine`, defaults to `mflux`: the model runs inside ComfyUI, as it
+always has. `mlx-serve` sends the job to a running [mlx-serve](https://github.com/ddalcu/mlx-serve)
+server instead, keeping AnyModel's nodes, references, masks and outputs. mlx-serve is a separate
+install, and nothing from it is bundled here.
+
+**Why.** On Apple Silicon, mlx-serve's native engines and its int8 compute on M5 neural accelerators
+are faster for the same models. Measured on an M5 Pro, 64 GB, at the same seed and settings, both
+engines on the same 4-bit packs where they share a format:
+
+| Model, job | mflux | mlx-serve |
+|---|---|---|
+| Qwen-Image 2.1, text-to-image, 1024², 40 steps | 130–137 s | 78 s (70 s with the model loaded) |
+| FLUX.2 Klein 4B, text-to-image, 1024², 4 steps | 12.1 s | 9.8 s (7.6 s loaded) |
+| FLUX.2 Klein 4B, edit, 4 steps | 17.1 s | 16.4 s (13.3 s loaded) |
+| MOSS-Image SFT, 1024², 25 steps, CFG 2.5 | not in an mflux release | 119 s |
+
+The Klein images from the two engines are near-identical at the same seed, because mlx-serve's FLUX.2
+engine is a port of mflux's.
+
+**The trade-off.** mlx-serve with int8 uses more memory: Klein peaks at about 16 GB in the server,
+against about 5 GB in mflux, and Qwen at about 13 GB against about 6 GB. Start the server with
+`--no-w8a8` for 4-bit compute: less memory, slower. mflux stays the low-memory, full-feature engine.
+
+**Use it:**
+
+1. Start mlx-serve, e.g. `mlx-serve serve --host 127.0.0.1 --port 11234 --max-resident-models 1`, and
+   set `MLX_SERVE_URL` for ComfyUI if it is not the default `http://127.0.0.1:11234`.
+2. On the loader, set `engine` to `mlx-serve`. Pick the pack with `local_model`, or put its folder in
+   `model_path`. The pack decides the model, so `model` can stay as it is, or be set to
+   `mlx-serve (pack decides)` for a pack mflux has no alias for, such as MOSS-Image.
+3. Packs only mlx-serve can run go in ComfyUI's `mlx_serve` model folder (`models/mlx_serve`, or an
+   `mlx_serve:` entry in `extra_model_paths.yaml`). They show in `local_model` as `[mlx-serve] <name>`,
+   and `engine: mflux` refuses them.
+
+Each job runs `MFLUX_BEFORE_LOAD`, then load, generate and, with `keep_loaded` off, unload, then
+`MFLUX_AFTER_FREE`. That runs even when the job fails or is cancelled; Cancel closes the stream, and
+mlx-serve stops the job.
+
+**What it does not do.**
+- LoRA, ControlNet and `quantize` are refused on the loader.
+- The mflux-only sampler settings (scheduler, preset, PiD, Z-Image shift and sigma schedule, MCF, a
+  depth map) are ignored with a note.
+- A connected mask is applied as AnyModel's composite after generation and never sent to the server.
+  Qwen-Image's native masked edit needs `engine: mflux`.
+- Don't share the server with other clients while ComfyUI uses it: with `--max-resident-models 1`,
+  another client's model would evict ComfyUI's mid-job.
+
 ## Running the tests
 
 ```
 python tests/test_dispatch.py
 python tests/test_sampler.py
+python tests/test_mlxserve.py   # the mlx-serve engine, against a stdlib fake server
 ```
 
 No weights are downloaded; the tests only introspect the installed mflux package.

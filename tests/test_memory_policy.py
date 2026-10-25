@@ -79,6 +79,7 @@ import inspect
 params = inspect.signature(nodes.MfluxModelLoader.load).parameters
 check("load takes low_ram", "low_ram" in params)
 check("low_ram defaults on", params["low_ram"].default is True)
-check("low_ram comes just before local_model (#10, appended after it)", list(params)[-2:] == ["low_ram", "local_model"])
+check("low_ram, then local_model (#10), then engine, each appended last",
+      list(params)[-3:] == ["low_ram", "local_model", "engine"])
 
 print("all memory-policy checks passed")

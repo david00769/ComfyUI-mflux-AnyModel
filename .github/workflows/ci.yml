@@ -49,5 +49,7 @@ jobs:
         run: python tests/test_segmentation.py
       - name: Live preview self-tests
         run: python tests/test_preview.py
+      - name: mlx-serve engine self-tests (fake server, no weights)
+        run: python tests/test_mlxserve.py
       - name: Node loads on stock mflux
         run: python tests/smoke_import.py
