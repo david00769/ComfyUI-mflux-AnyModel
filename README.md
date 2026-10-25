@@ -260,7 +260,9 @@ The Klein images from the two engines are near-identical at the same seed, becau
 engine is a port of mflux's.
 
 **The trade-off.** mlx-serve with int8 uses more memory: Klein peaks at about 16 GB in the server,
-against about 5 GB in mflux, and Qwen at about 13 GB against about 6 GB. Start the server with
+against about 5 GB in mflux; Qwen at about 13 GB against about 6 GB; and MOSS-Image (8-bit) at about
+24 GB at 1024². The gain is smallest on multi-reference edits: a 4-reference Qwen-Image 2.1 edit took
+284 s against mflux's 330 s. Start the server with
 `--no-w8a8` for 4-bit compute: less memory, slower. mflux stays the low-memory, full-feature engine.
 
 **Use it:**
@@ -274,9 +276,10 @@ against about 5 GB in mflux, and Qwen at about 13 GB against about 6 GB. Start t
    `mlx_serve:` entry in `extra_model_paths.yaml`). They show in `local_model` as `[mlx-serve] <name>`,
    and `engine: mflux` refuses them.
 
-Each job runs `MFLUX_BEFORE_LOAD`, then load, generate and, with `keep_loaded` off, unload, then
-`MFLUX_AFTER_FREE`. That runs even when the job fails or is cancelled; Cancel closes the stream, and
-mlx-serve stops the job.
+Each job runs `MFLUX_BEFORE_LOAD`, then load and generate. With `keep_loaded` off it then unloads the
+model and runs `MFLUX_AFTER_FREE`, even when the job fails or is cancelled. Cancel closes the stream,
+and mlx-serve stops the job. With `keep_loaded` on, the model stays in the server for the next job and
+`MFLUX_AFTER_FREE` does not run, as on the mflux engine, because the memory has not been given back.
 
 **What it does not do.**
 - LoRA, ControlNet and `quantize` are refused on the loader.

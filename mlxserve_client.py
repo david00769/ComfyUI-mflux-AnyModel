@@ -71,21 +71,29 @@ def generate(url: str, body: dict, *, on_progress: Callable[[int, int], None] | 
              interrupted: Callable[[], bool] | None = None, timeout: float = 3600) -> bytes:
     """POST the body and follow its event stream; returns the PNG. Closing the stream cancels the job."""
     with _open(url, "/v1/images/generations", body, timeout) as stream:
-        for raw in stream:
-            if interrupted is not None and interrupted():
-                raise InterruptedError("cancelled")
-            line = raw.decode(errors="ignore").strip()
-            if not line.startswith("data:"):
-                continue
-            try:
-                event = json.loads(line[5:])
-            except ValueError:
-                continue
-            kind = event.get("type")
-            if kind == "progress" and on_progress is not None:
-                on_progress(int(event.get("step") or 0), int(event.get("total") or 0))
-            elif kind == "complete":
-                return base64.b64decode(event["data"][0]["b64_json"])
-            elif kind == "error" or "error" in event:
-                raise MlxServeError(f"mlx-serve: {event.get('error') or event}")
+        try:
+            for raw in stream:
+                if interrupted is not None and interrupted():
+                    raise InterruptedError("cancelled")
+                line = raw.decode(errors="ignore").strip()
+                if not line.startswith("data:"):
+                    continue
+                try:
+                    event = json.loads(line[5:])
+                except ValueError:
+                    continue
+                kind = event.get("type")
+                if kind == "progress" and on_progress is not None:
+                    on_progress(int(event.get("step") or 0), int(event.get("total") or 0))
+                elif kind == "complete":
+                    try:
+                        return base64.b64decode(event["data"][0]["b64_json"])
+                    except (KeyError, IndexError, TypeError, ValueError):
+                        raise MlxServeError(f"mlx-serve sent a complete event without an image: {str(event)[:200]}") from None
+                elif kind == "error" or "error" in event:
+                    raise MlxServeError(f"mlx-serve: {event.get('error') or event}")
+        except InterruptedError:
+            raise
+        except OSError as e:  # a timeout or reset while the image was being made
+            raise MlxServeError(f"mlx-serve stream from {url} broke off: {e}") from None
     raise MlxServeError("mlx-serve closed the stream without an image")

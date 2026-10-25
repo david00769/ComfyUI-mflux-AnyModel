@@ -183,7 +183,7 @@ open(log, "w").close()
 kept, = loader.load(nodes.PACK_DECIDES, "none", model_path=pack, keep_loaded=True, engine="mlx-serve")
 nodes.MfluxModelSampler().generate(kept, "x", "auto", steps=1, width=64, height=48)
 ok(fake.events == ["/v1/load-model", "/v1/images/generations"], "keep_loaded leaves the model in the server")
-ok(open(log).read().split() == ["before", "after"], "the hooks still run with keep_loaded")
+ok(open(log).read().split() == ["before"], "with keep_loaded the model stays in the server, so no after-hook (memory not given back)")
 fake.mode = "error"
 fake.events.clear(); fake.bodies.clear()
 try:
@@ -191,5 +191,11 @@ try:
     ok(False, "a failed job raises")
 except ms.MlxServeError:
     ok(fake.events[-1] == "/v1/unload-model", "a failed job still unloads")
+
+fake.mode = "ok"
+_, info = nodes.MfluxModelSampler().generate(
+    handle, "x", "auto", steps=1, width=64, height=48,
+    mflux_image=nodes.MfluxImagePayload(images=[image], strength=0.6, strengths=[0.6]))
+ok("image_strength" in info and "full strength" in info, "a strength below 1 is named as ignored, not dropped silently")
 
 print(f"all {_checks} mlx-serve checks passed")

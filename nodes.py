@@ -277,12 +277,17 @@ def _pil_to_image(pil):
     return torch.from_numpy(arr).unsqueeze(0)
 
 
-def _image_to_temp_png(image_tensor):
+def _tensor_to_pil(image_tensor):
+    """The first image of an IMAGE batch as an RGB PIL image."""
     from PIL import Image
     arr = (image_tensor[0].cpu().numpy() * 255.0).clip(0, 255).astype(np.uint8)
+    return Image.fromarray(arr)
+
+
+def _image_to_temp_png(image_tensor):
     fd, path = tempfile.mkstemp(suffix=".png", prefix="mflux_in_")
     os.close(fd)
-    Image.fromarray(arr).save(path)
+    _tensor_to_pil(image_tensor).save(path)
     return path
 
 
@@ -741,13 +746,14 @@ def _mlxserve_handle(model, quantize, model_path, lora, controlnet_path, keep_lo
     if not path or not os.path.isdir(path):
         raise ValueError("engine: mlx-serve needs a local pack folder: pick local_model, or set model_path "
                          f"to a folder on this Mac (got {model_path!r}).")
+    name = os.path.basename(os.path.normpath(path))   # the folder's own name, for the info line
     path = os.path.realpath(path)   # one id for load, request and unload
     if _CACHE.get("model") is not None:
         # Switching engines: do not keep an mflux model resident beside the server's copy.
         from types import SimpleNamespace
         _memory_policy().release_model(SimpleNamespace(instance=_CACHE["model"]), _CACHE)
     return MfluxModelHandle(
-        instance=None, family="mlx-serve", model_config=None, alias=strip_mark(model), profile=None,
+        instance=None, family="mlx-serve", model_config=None, alias=name, profile=None,
         cache_key=("mlx-serve", path), free_comfy_first=False, keep_loaded=bool(keep_loaded),
         low_ram=False, engine="mlx-serve", remote_model=path,
     )
@@ -867,8 +873,12 @@ class MfluxModelSampler:
                 ("scheduler", scheduler, "auto"), ("preset", preset, "(model default)"),
                 ("pid_decode", bool(pid_decode), False), ("shift", float(shift), 0.0),
                 ("sigma_schedule", (sigma_schedule or "").strip(), ""), ("mcf_max_change", float(mcf_max_change), 0.0),
+                ("pid_degrade_sigma", float(pid_degrade_sigma), 0.0),
                 ("map_image", payload.aux if payload is not None else None, None),
             ) if value != inert]
+            if payload is not None and any(float(s) != 1.0 for s in (payload.strengths or [payload.strength or 1.0])):
+                # mlx-serve edits from the references themselves; it has no img2img or per-image strength.
+                ignored.append("image_strength / MfluxImage strength (mlx-serve edits at full strength)")
             gen, forwarded, notes = _generate_mlxserve(handle, prompt, negative_prompt, seed, steps, guidance,
                                                        width, height, payload, unique_id)
             if ignored:
@@ -1006,12 +1016,10 @@ def _finish(handle, gen, payload, forwarded, notes, mask_mode, mask_feather):
 
 
 def _png_bytes(tensor):
-    """One IMAGE tensor (batch of 1) as PNG bytes, for the mlx-serve request."""
+    """One IMAGE tensor as PNG bytes for the mlx-serve request (same conversion as the mflux temp PNGs)."""
     import io
-    from PIL import Image
-    arr = (tensor[0].cpu().numpy().clip(0.0, 1.0) * 255.0).round().astype(np.uint8)
     buf = io.BytesIO()
-    Image.fromarray(arr).save(buf, format="PNG")
+    _tensor_to_pil(tensor).save(buf, format="PNG")
     return buf.getvalue()
 
 
@@ -1057,12 +1065,14 @@ def _generate_mlxserve(handle, prompt, negative_prompt, seed, steps, guidance, w
             mm.throw_exception_if_processing_interrupted()
         raise
     finally:
-        try:
-            if not handle.keep_loaded:
+        # As on the mflux path, the after-hook means "memory given back": with keep_loaded the model
+        # stays in the server, so whatever BEFORE_LOAD freed stays freed until a job unloads it.
+        if not handle.keep_loaded:
+            try:
                 client.unload(url, handle.remote_model)
-        except Exception as e:  # the job's outcome stands; a failed unload is reported, not raised
-            notes.append(f"[mflux] mlx-serve unload failed: {e}")
-        policy.run_hook("MFLUX_AFTER_FREE", required=False)
+            except Exception as e:  # the job's outcome stands; a failed unload is reported, not raised
+                notes.append(f"[mflux] mlx-serve unload failed: {e}")
+            policy.run_hook("MFLUX_AFTER_FREE", required=False)
     forwarded = {k: v for k, v in body.items() if k not in ("image", "ref_images", "stream", "response_format")}
     return Image.open(io.BytesIO(png)).convert("RGB"), forwarded, notes
 
