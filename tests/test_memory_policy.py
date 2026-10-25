@@ -81,4 +81,10 @@ check("load takes low_ram", "low_ram" in params)
 check("low_ram defaults on", params["low_ram"].default is True)
 check("low_ram is the last parameter", list(params)[-1] == "low_ram")
 
+print("keep_loaded off makes the loader run again on every queue")
+import math
+changed = nodes.MfluxModelLoader.IS_CHANGED
+check("keep_loaded off is never 'unchanged' (NaN)", math.isnan(changed(model="schnell", keep_loaded=False)))
+check("keep_loaded on keeps ComfyUI's cache", changed(model="schnell", keep_loaded=True) == changed(model="schnell", keep_loaded=True))
+
 print("all memory-policy checks passed")

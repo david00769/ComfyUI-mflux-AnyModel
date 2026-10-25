@@ -560,6 +560,14 @@ class MfluxModelLoader:
     FUNCTION = "load"
     CATEGORY = "MLX/mflux/loaders"
 
+    @classmethod
+    def IS_CHANGED(cls, keep_loaded=True, **_inputs):
+        # keep_loaded off: the sampler releases the model after each image, so the handle ComfyUI
+        # cached from the last run is empty. NaN never equals itself, so the loader runs again
+        # instead of handing the sampler that empty handle (a second queue of the same graph
+        # otherwise failed with "'NoneType' object has no attribute ...").
+        return float("nan") if not keep_loaded else ""
+
     def load(self, model, quantize, base_model="(none)", model_path="",
              lora=None, controlnet_path="", controlnet_strength=1.0,
              keep_loaded=True, free_comfy_first=True, bake_lora=True, low_ram=True):
