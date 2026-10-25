@@ -245,16 +245,19 @@ always has. `mlx-serve` sends the job to a running [mlx-serve](https://github.co
 server instead, keeping AnyModel's nodes, references, masks and outputs. mlx-serve is a separate
 install, and nothing from it is bundled here.
 
-**Why.** On Apple Silicon, mlx-serve's native engines and its int8 compute on M5 neural accelerators
-are faster for the same models. Measured on an M5 Pro, 64 GB, at the same seed and settings, both
-engines on the same 4-bit packs where they share a format:
+**When it helps.** Only on Macs whose GPU has neural accelerators (M5), where mlx-serve runs int8
+compute on them, and mainly for Qwen-Image and MOSS. Measured on an M5 Pro, 64 GB, at the same seed
+and settings (several runs each, 2026-10-25):
 
-| Model, job | mflux | mlx-serve |
-|---|---|---|
-| Qwen-Image 2.1, text-to-image, 1024², 40 steps | 130–137 s | 78 s (70 s with the model loaded) |
-| FLUX.2 Klein 4B, text-to-image, 1024², 4 steps | 12.1 s | 9.8 s (7.6 s loaded) |
-| FLUX.2 Klein 4B, edit, 4 steps | 17.1 s | 16.4 s (13.3 s loaded) |
-| MOSS-Image SFT, 1024², 25 steps, CFG 2.5 | not in an mflux release | 119 s |
+| Model, job | mflux | mlx-serve (int8) | mlx-serve, int8 off |
+|---|---|---|---|
+| Qwen-Image 2.1, text-to-image, 1024², 40 steps | 115 s | 70–81 s | 155 s |
+| Qwen-Image 2.1, edit, 4 references | 330 s | 284 s | 364 s |
+| FLUX.2 Klein 4B, text-to-image, 4 steps (same 4-bit pack) | 9.4–10.7 s | 9.1–10.7 s | 13.8 s |
+| MOSS-Image SFT, 1024², 25 steps, CFG 2.5 | not in an mflux release | 119 s | — |
+
+So: Qwen-Image text-to-image about 1.5× faster, its edit about 1.16×, MOSS available; Klein no faster.
+With int8 off, which is what a Mac without neural accelerators gets, mlx-serve is slower than mflux.
 
 The Klein images from the two engines are near-identical at the same seed, because mlx-serve's FLUX.2
 engine is a port of mflux's.
